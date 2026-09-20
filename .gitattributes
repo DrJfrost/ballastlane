@@ -1,0 +1,43 @@
+# Line-ending policy.
+#
+# Git for Windows ships with `core.autocrlf=true`, so without this file a
+# fresh clone on Windows rewrites every text file to CRLF in the working
+# tree. For most files that is harmless. For the scripts that run *inside a
+# Linux container* it is fatal:
+#
+#     /usr/local/bin/docker-entrypoint.sh: bad interpreter:
+#     /usr/bin/env bash^M: no such file or directory
+#
+# That breaks `docker compose up` for anyone who clones on Windows, while
+# working perfectly for whoever authored it — the worst kind of bug to ship.
+#
+# `eol=lf` pins LF in the working tree on every platform, which is what the
+# shebang, the Dockerfiles and the shell scripts need.
+
+* text=auto eol=lf
+
+# Called out explicitly, because these are the ones that actually break.
+*.sh                 text eol=lf
+Dockerfile           text eol=lf
+docker-entrypoint.sh text eol=lf
+*.mako               text eol=lf
+
+# Tab-indented by necessity; LF as well.
+Makefile             text eol=lf
+
+# Never converted, never diffed as text.
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.ico    binary
+*.woff   binary
+*.woff2  binary
+*.pdf    binary
+*.db     binary
+*.sqlite3 binary
+
+# Generated lockfiles: keep them out of review diffs and resolve conflicts by
+# regenerating rather than by editing.
+uv.lock           -diff linguist-generated
+package-lock.json -diff linguist-generated
