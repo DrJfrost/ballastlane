@@ -1,0 +1,22 @@
+# Keeping the build context small speeds up every build and, more
+# importantly, stops local secrets and caches from ending up in an image.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+coverage.xml
+.coverage
+*.db
+*.sqlite3
+.env
+.env.*
+!.env.example
+.git/
+.github/
+tests/
+docs/

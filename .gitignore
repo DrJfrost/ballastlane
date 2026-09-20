@@ -1,0 +1,34 @@
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+coverage.xml
+.coverage
+.coverage.*
+*.db
+*.sqlite3
+
+# --- Node -------------------------------------------------------------------
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# --- Secrets ----------------------------------------------------------------
+# Never commit a real environment file; .env.example is the template.
+.env
+.env.*
+!.env.example
+
+# --- Editors / OS -----------------------------------------------------------
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db

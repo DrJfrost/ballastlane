@@ -1,0 +1,197 @@
+# One command brings up the whole system: database, cache/broker, API,
+# Celery worker, Celery beat and the web UI.
+#
+#   docker compose up --build
+#   -> http://localhost:8080   (app, with the API proxied on the same origin)
+#   -> http://localhost:8000/docs  (Swagger, direct)
+#
+# Credentials are the seeded demo ones, printed in the api container logs.
+
+name: taskflow
+
+# ---------------------------------------------------------------------------
+# Shared configuration.
+#
+# The API, the worker and beat run the *same image* with the same environment
+# and differ only in their command. That is deliberate: a worker that was
+# built differently from the API is a worker that will eventually disagree
+# with it about the schema.
+# ---------------------------------------------------------------------------
+x-api-environment: &api-environment
+  ENVIRONMENT: local
+  DEBUG: 'false'
+  LOG_LEVEL: INFO
+  LOG_JSON: 'true'
+
+  DATABASE_URL: postgresql+asyncpg://taskflow:taskflow@db:5432/taskflow
+
+  # Fine for a local demo. In a real deployment this comes from a secret
+  # store, and `_guard_production` refuses to boot without a strong one.
+  SECRET_KEY: local-development-secret-key-change-me-in-production-please
+  ACCESS_TOKEN_TTL_MINUTES: '15'
+  REFRESH_TOKEN_TTL_DAYS: '7'
+  BCRYPT_ROUNDS: '12'
+
+  CORS_ORIGINS: http://localhost:8080,http://localhost:5173
+
+  RATE_LIMIT_ENABLED: 'true'
+  # Redis rather than memory: counters have to be shared, or N workers each
+  # allow the full limit and the effective ceiling is N times what was set.
+  RATE_LIMIT_STORAGE_URL: redis://redis:6379/2
+
+  CELERY_ENABLED: 'true'
+  CELERY_BROKER_URL: redis://redis:6379/0
+  CELERY_RESULT_BACKEND: redis://redis:6379/1
+  OVERDUE_SCAN_CRON_HOUR: '7'
+
+  DOCS_ENABLED: 'true'
+  SEED_PASSWORD: DemoPassw0rd!2026
+
+x-api-build: &api-build
+  context: ./backend
+  dockerfile: Dockerfile
+
+services:
+  # -------------------------------------------------------------------- db
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: taskflow
+      POSTGRES_PASSWORD: taskflow
+      POSTGRES_DB: taskflow
+      # Skips the locale-aware collation setup, which makes the first start
+      # noticeably faster and is irrelevant for a demo dataset.
+      POSTGRES_INITDB_ARGS: '--encoding=UTF8 --locale=C'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      # Exposed so a reviewer can point psql or a GUI at it.
+      - '5432:5432'
+    healthcheck:
+      # `pg_isready` with the real user and database: the default check
+      # reports ready while the init scripts are still running, and the API
+      # then fails its first connection.
+      test: ['CMD-SHELL', 'pg_isready -U taskflow -d taskflow']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # ----------------------------------------------------------------- redis
+  redis:
+    image: redis:7-alpine
+    # Persistence off: this Redis is a broker and a rate-limit counter store,
+    # both of which are safe to lose. An AOF would only add disk churn.
+    command: redis-server --save '' --appendonly no --maxmemory 128mb --maxmemory-policy allkeys-lru
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------- api
+  api:
+    build: *api-build
+    environment:
+      <<: *api-environment
+      # Only this container migrates and seeds. If the worker did it too,
+      # three processes would race on the alembic_version row at every start.
+      RUN_MIGRATIONS: 'true'
+      RUN_SEED: 'true'
+    ports:
+      - '8000:8000'
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------- worker
+  worker:
+    build: *api-build
+    environment:
+      <<: *api-environment
+      RUN_MIGRATIONS: 'false'
+      RUN_SEED: 'false'
+    command:
+      - celery
+      - --app=taskflow.infrastructure.tasks.celery_app:celery_app
+      - worker
+      - --loglevel=info
+      # Two processes is plenty for a demo and keeps the memory footprint
+      # small; the real value belongs in an env var per environment.
+      - --concurrency=2
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      # Waits for the API so migrations have been applied before the worker
+      # queries tables that may not exist yet.
+      api:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - celery --app=taskflow.infrastructure.tasks.celery_app:celery_app inspect ping -d celery@$$HOSTNAME || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------ beat
+  beat:
+    build: *api-build
+    environment:
+      <<: *api-environment
+      RUN_MIGRATIONS: 'false'
+      RUN_SEED: 'false'
+    command:
+      - celery
+      - --app=taskflow.infrastructure.tasks.celery_app:celery_app
+      - beat
+      - --loglevel=info
+      # The schedule file goes under /tmp, which is writable by the
+      # unprivileged container user; the default path is not.
+      - --schedule=/tmp/celerybeat-schedule
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_started
+    # Beat runs the API image, so it inherits that image's healthcheck, which
+    # curls /health/live -- an endpoint a scheduler does not serve. It could
+    # never pass, so the container would sit in `health: starting` forever and
+    # stall `docker compose up --wait`.
+    #
+    # There is nothing meaningful to probe either: beat is not a server, and
+    # `celery inspect ping` only answers for workers. No healthcheck is the
+    # honest answer; one that always fails is worse than none.
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------- web
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Empty on purpose: nginx proxies /api to the api service, so the
+        # browser only ever talks to one origin and CORS never applies.
+        VITE_API_BASE_URL: ''
+    ports:
+      - '8080:8080'
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  postgres-data:

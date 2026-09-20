@@ -1,0 +1,164 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push to the same branch cancels the previous run instead of queueing
+# behind it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: '3.12'
+  NODE_VERSION: '22'
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+
+    # The suite runs against SQLite for speed, and again against PostgreSQL
+    # so anything dialect-specific (NULLS LAST, ILIKE, TIMESTAMPTZ) is caught
+    # on the database that actually runs in production.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: taskflow
+          POSTGRES_PASSWORD: taskflow
+          POSTGRES_DB: taskflow_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U taskflow"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv venv --python ${{ env.PYTHON_VERSION }} && uv pip install -e ".[dev]"
+
+      - name: Lint
+        run: uv run ruff check --output-format=github .
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Type check
+        run: uv run mypy
+
+      - name: Tests (SQLite) with coverage gate
+        run: uv run pytest
+        env:
+          ENVIRONMENT: test
+          SECRET_KEY: ci-secret-key-long-enough-for-hs256-signing-in-ci
+          CELERY_ENABLED: 'false'
+          RATE_LIMIT_ENABLED: 'false'
+          RATE_LIMIT_STORAGE_URL: 'memory://'
+
+      - name: Migrations apply cleanly to PostgreSQL
+        # Proves the migration works on the real backend, not only under
+        # SQLite's batch-mode emulation.
+        run: uv run alembic upgrade head && uv run alembic downgrade base
+        env:
+          DATABASE_URL: postgresql+asyncpg://taskflow:taskflow@localhost:5432/taskflow_test
+          SECRET_KEY: ci-secret-key-long-enough-for-hs256-signing-in-ci
+
+      - name: Seed runs against PostgreSQL
+        run: uv run alembic upgrade head && uv run python -m taskflow.scripts.seed
+        env:
+          DATABASE_URL: postgresql+asyncpg://taskflow:taskflow@localhost:5432/taskflow_test
+          SECRET_KEY: ci-secret-key-long-enough-for-hs256-signing-in-ci
+          BCRYPT_ROUNDS: '4'
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: backend/htmlcov/
+          retention-days: 7
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  docker:
+    name: Docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build images
+        run: docker compose build
+
+      - name: Start the stack
+        run: docker compose up -d --wait --wait-timeout 180
+
+      - name: Smoke test the API
+        # A build that starts is not the same as a build that works: this
+        # logs in with a seeded account and reads a protected endpoint.
+        run: |
+          set -euo pipefail
+          curl --fail --silent http://localhost:8000/health/ready
+          TOKEN=$(curl --fail --silent -X POST http://localhost:8000/api/v1/auth/login \
+            -H 'Content-Type: application/json' \
+            -d '{"email":"ada@taskflow.dev","password":"DemoPassw0rd!2026"}' \
+            | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
+          curl --fail --silent http://localhost:8000/api/v1/tasks/stats \
+            -H "Authorization: Bearer $TOKEN"
+          curl --fail --silent --output /dev/null http://localhost:8080/
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

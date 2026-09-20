@@ -1,0 +1,239 @@
+[project]
+name = "taskflow"
+version = "1.0.0"
+description = "Task management API built with FastAPI on a Clean Architecture layout"
+# No ``readme`` field: the project README lives at the repository root, and
+# hatchling only accepts a path inside the package directory.
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+dependencies = [
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "email-validator>=2.2",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "alembic>=1.14",
+    "asyncpg>=0.30",
+    "psycopg[binary]>=3.2",
+    "aiosqlite>=0.20",
+    "pyjwt>=2.10",
+    "bcrypt>=4.2",
+    "python-multipart>=0.0.12",
+    "slowapi>=0.1.9",
+    "redis>=5.2",
+    "celery[redis]>=5.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "httpx>=0.28",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "types-redis>=4.6",
+    "pre-commit>=4.0",
+]
+
+[project.scripts]
+taskflow-seed = "taskflow.scripts.seed:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/taskflow"]
+# Ships the PEP 561 marker, so consumers (and mypy) know the package is
+# typed. Without it, mypy treats every ``taskflow.*`` import as an untyped
+# third-party library and skips the whole codebase.
+artifacts = ["src/taskflow/py.typed"]
+
+# --------------------------------------------------------------------------- #
+# Ruff: linter + formatter, replacing black + isort + flake8 + a pile of
+# plugins with one fast tool and one config block.
+# --------------------------------------------------------------------------- #
+[tool.ruff]
+line-length = 96
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",      # pycodestyle
+    "F",           # pyflakes
+    "I",           # isort
+    "N",           # pep8-naming
+    "UP",          # pyupgrade
+    "B",           # bugbear
+    "A",           # builtin shadowing
+    "C4",          # comprehensions
+    "DTZ",         # naive-datetime detection -- the bug class this app cares about
+    "T20",         # no stray print()
+    "PT",          # pytest style
+    "RET",         # return simplifications
+    "SIM",         # simplifications
+    "ARG",         # unused arguments
+    "PL",          # pylint subset
+    "RUF",         # ruff-specific
+    "ASYNC",       # async pitfalls (blocking calls in async defs)
+    "S",           # bandit security checks
+]
+ignore = [
+    "E501",    # line length is enforced by the formatter
+    "B008",    # FastAPI's Depends()/Query() in defaults is the documented idiom
+    "PLR0913", # use-case constructors legitimately take several collaborators
+    "RUF012",  # ClassVar annotations add noise on Pydantic/Celery config dicts
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert, compare against literals, print and take fixtures they only
+# need for their side effects.
+"tests/**" = [
+    "S101",     # assert is the point of a test
+    "PLR2004",  # expected values are literals on purpose
+    "T20",
+    "ARG001",
+    "ARG002",
+    "S105",     # test passwords are not secrets
+    "S106",
+    "S107",
+    "DTZ001",
+    "PT012",    # some `pytest.raises` blocks legitimately span statements
+    "PT018",    # a compound assert can be the clearest statement of intent
+    "PLC0415",  # a couple of imports are deliberately local to one test
+    "SLF001",
+    # The in-memory fakes mirror the SQL filter/sort logic; a flat chain of
+    # guard clauses is the clearest form for that, complexity limits aside.
+    "PLR0911",
+    "PLR0912",
+    "PLR0917",
+]
+
+# FastAPI routers: `request` and `response` are declared because slowapi
+# locates them by name to key the rate limit and inject its headers. They are
+# genuinely unused *by the handler body*, which is what ARG001 reports, and
+# FastAPI passes everything by keyword so PLR0917 does not apply either.
+"src/taskflow/presentation/api/v1/routers/*.py" = ["ARG001", "PLR0917"]
+
+# Celery's `bind=True` passes the task instance as `self`; it is required in
+# the signature so that a retry can call `self.retry()`, even where the
+# current body does not.
+"src/taskflow/infrastructure/tasks/jobs.py" = ["ARG001"]
+
+# `TypeDecorator` hook signatures are fixed by SQLAlchemy; `dialect` is part
+# of the contract whether or not this implementation consults it.
+"src/taskflow/infrastructure/db/types.py" = ["ARG002"]
+
+# The seeder reports to the console on purpose.
+"src/taskflow/scripts/seed.py" = ["T20"]
+
+# Migrations are generated and follow Alembic's own conventions.
+# Generated revisions all import the custom column types from the script
+# template, because autogenerate may reference them. Whether that import is
+# actually *used* depends on the revision, so the template's
+# ``# noqa: F401`` is necessary in some files and redundant in others --
+# which is why ``RUF100`` (unused-noqa) is off here rather than ``F401``.
+"migrations/**" = ["N999", "ARG001", "T20", "RUF100", "INP001"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["taskflow"]
+
+[tool.ruff.format]
+quote-style = "double"
+skip-magic-trailing-comma = false
+
+# --------------------------------------------------------------------------- #
+# mypy
+# --------------------------------------------------------------------------- #
+[tool.mypy]
+python_version = "3.12"
+# ``mypy_path`` + explicit bases so that ``src/taskflow/...`` resolves as
+# ``taskflow....`` only. Pointing ``files`` at ``src`` instead makes mypy see
+# the same file under two module names and refuse to continue.
+mypy_path = "src"
+explicit_package_bases = true
+namespace_packages = true
+files = ["src/taskflow", "tests"]
+strict = true
+plugins = ["pydantic.mypy"]
+warn_unreachable = true
+show_error_codes = true
+# The domain is the layer where type errors are most expensive, so it is held
+# to the strictest settings with no escape hatches.
+disallow_any_explicit = false
+disallow_untyped_decorators = false
+
+[[tool.mypy.overrides]]
+module = ["slowapi.*", "celery.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Tests are checked, but not held to full annotation coverage: a fixture
+# signature such as ``(self, client, alice)`` is clearer without repeating
+# types that pytest already resolves, and annotating every one of them adds
+# noise without catching bugs.
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_any_generics = false
+disallow_untyped_calls = false
+
+# --------------------------------------------------------------------------- #
+# pytest
+# --------------------------------------------------------------------------- #
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+    "--cov=taskflow",
+    "--cov-report=term-missing:skip-covered",
+    "--cov-report=xml",
+    "--cov-report=html",
+    # The exercise asks for 80%; the build fails below it rather than
+    # reporting the number and moving on.
+    "--cov-fail-under=80",
+]
+markers = [
+    "unit: no I/O, milliseconds",
+    "integration: exercises the API against a real database",
+    "slow: excluded from the fast feedback loop",
+]
+filterwarnings = [
+    "error",
+    # Starlette's TestClient shutdown path in some versions.
+    "ignore::DeprecationWarning:starlette.*",
+    "ignore::DeprecationWarning:httpx.*",
+]
+
+[tool.coverage.run]
+source = ["taskflow"]
+branch = true
+omit = [
+    # Thin glue with no branches worth asserting on.
+    "*/taskflow/main.py",
+    "*/migrations/*",
+    "*/taskflow/infrastructure/tasks/celery_app.py",
+]
+
+[tool.coverage.report]
+precision = 1
+show_missing = true
+skip_covered = false
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@(abc\\.)?abstractmethod",
+    "\\.\\.\\.$",
+    "if __name__ == .__main__.:",
+    "pragma: no cover",
+]
