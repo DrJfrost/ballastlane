@@ -14,6 +14,14 @@ coverage.xml
 *.db
 *.sqlite3
 
+# `uv.lock` is not committed: nothing in this project reads it. Installation
+# goes through `uv pip install -e .` and the Docker build through
+# `uv pip install .`, both of which resolve from pyproject.toml. Committing a
+# lockfile that no build step consumes implies the dependencies are pinned
+# when they are not -- and it was a third of the repository by size.
+# Real pinning would mean moving to `uv sync`, which is a separate change.
+backend/uv.lock
+
 # --- Node -------------------------------------------------------------------
 node_modules/
 dist/
