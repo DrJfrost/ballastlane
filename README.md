@@ -45,18 +45,25 @@ applied automatically on first start.
 
 Stop it with `docker compose down -v`.
 
-**Port conflicts.** PostgreSQL and Redis are published on **5433** and
-**6380**, not their defaults, because a developer machine very often already
-has something on 5432 or 6379 and `docker compose up` then dies with
-`port is already allocated`. Neither mapping is needed by the app — the API
-reaches both over the compose network — they are published only so you can
-attach `psql` or `redis-cli`. Every host port is overridable:
+**Only two ports are published**: `8000` for the API and `8080` for the web
+UI. PostgreSQL and Redis are deliberately *not* mapped to the host — the API
+reaches them over the compose network, so a mapping buys nothing and can cost
+you the whole stack: any fixed host port may already be taken, and Docker
+aborts with `port is already allocated`. Picking a less common port only
+makes that rarer, not impossible.
+
+To inspect them:
+
+```bash
+docker compose exec db psql -U taskflow -d taskflow
+docker compose exec redis redis-cli
+```
+
+If 8000 or 8080 are busy on your machine, override them:
 
 ```bash
 API_HOST_PORT=9000 WEB_HOST_PORT=9080 docker compose up --build
 ```
-
-`DB_HOST_PORT` and `REDIS_HOST_PORT` work the same way.
 
 ### Without Docker (no PostgreSQL or Redis needed)
 
