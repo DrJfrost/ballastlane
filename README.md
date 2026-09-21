@@ -67,6 +67,28 @@ API_HOST_PORT=9000 WEB_HOST_PORT=9080 docker compose up --build
 
 ### Without Docker (no PostgreSQL or Redis needed)
 
+**Required runtimes.** Docker needs neither of these — it pins them in the
+images — but a local run does:
+
+| | Version | Pinned in |
+|---|---|---|
+| **Python** | **3.12** | `pyproject.toml` (`requires-python = ">=3.12"`) |
+| **Node** | **24** (LTS) | `frontend/.nvmrc`, and the Docker image and CI |
+
+Node **22 also works** — that is the floor declared in
+`frontend/package.json` (`engines.node: ">=22.0.0"`), set by Vite 6, which is
+the strictest dependency. But 24 is what this was built and verified on, and
+what `frontend/Dockerfile` and the CI pipeline use, so it is the one to
+prefer. With `nvm` or `fnm`:
+
+```bash
+cd frontend && nvm use        # reads .nvmrc -> 24
+```
+
+`frontend/.npmrc` sets `engine-strict=true`, so installing on an unsupported
+Node fails immediately with a clear message instead of only warning and then
+breaking later inside Vite with something cryptic.
+
 ```bash
 # backend -- defaults to SQLite with Celery disabled
 cd backend
@@ -76,8 +98,15 @@ uv run python -m taskflow.scripts.seed
 uv run uvicorn taskflow.main:app --reload      # http://localhost:8000
 
 # frontend, in a second terminal
-cd frontend && npm install && npm run dev      # http://localhost:5173
+cd frontend
+npm ci                                          # exact versions from the lockfile
+npm run dev                                     # http://localhost:5173
 ```
+
+`npm ci` rather than `npm install`: it installs precisely what
+`package-lock.json` records, so you compile the same dependency tree that was
+tested. `npm install` is free to resolve newer versions and quietly change
+them.
 
 With `CELERY_ENABLED=false` the app still works end to end: domain events are
 recorded in-process instead of dispatched to a broker, so the whole API is
