@@ -45,6 +45,19 @@ applied automatically on first start.
 
 Stop it with `docker compose down -v`.
 
+**Port conflicts.** PostgreSQL and Redis are published on **5433** and
+**6380**, not their defaults, because a developer machine very often already
+has something on 5432 or 6379 and `docker compose up` then dies with
+`port is already allocated`. Neither mapping is needed by the app — the API
+reaches both over the compose network — they are published only so you can
+attach `psql` or `redis-cli`. Every host port is overridable:
+
+```bash
+API_HOST_PORT=9000 WEB_HOST_PORT=9080 docker compose up --build
+```
+
+`DB_HOST_PORT` and `REDIS_HOST_PORT` work the same way.
+
 ### Without Docker (no PostgreSQL or Redis needed)
 
 ```bash
@@ -101,9 +114,14 @@ is idempotent — rerun it to reset.
 ### Verifying it
 
 ```bash
-./scripts/verify.sh                 # lint, types, tests, coverage, build
-./scripts/verify.sh --with-docker   # the above, plus the running stack
+bash scripts/verify.sh                 # lint, types, tests, coverage, build
+bash scripts/verify.sh --with-docker   # the above, plus the running stack
 ```
+
+Invoked through `bash` rather than `./` on purpose: a zip archive does not
+carry the Unix execute bit, so `./scripts/verify.sh` fails with
+`Permission denied` for anyone who received this as an archive rather than a
+clone. (`chmod +x scripts/verify.sh` also works.)
 
 Prints a pass/fail line per requirement and exits non-zero on any failure.
 Needs no `make`, which is the usual reason a project's own checks do not run
